@@ -2,6 +2,11 @@
 This is a Linux I2C Platform Device Driver for cheap TEA5767 Radio Tuner modules you can find on Amazon:
 https://www.amazon.com/TEA5767-Stereo-FM-Radio-Telescopic/dp/B01J3UOUE4/ref=sr_1_4?keywords=tea5767&qid=1579200160&sr=8-4
 
+![Image of TEA5767 FM Radio Tuner Module](https://raw.githubusercontent.com/mozcelikors/tea5767_kernel_driver/master/module-image.jpg)
+
+This driver is not to be confused with Philips TEA5767 chip driver, which is already available at 
+https://github.com/spotify/linux/blob/master/drivers/media/common/tuners/tea5767.c
+
 ## Adding to Your System
 ### Adding to Kernel Makefile
 Add to your misc driver Makefile as such:
