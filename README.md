@@ -24,21 +24,25 @@ index 16d1c85cfced..8d7fb682f0b9 100644
 ### Adding to Devicetree
 Add to your devicetree as such:
 ```
-   diff --git a/arch/arm/boot/dts/bcm2711-rpi-4-b.dts b/arch/arm/boot/dts/bcm2711-rpi-4-b.dts
-   index 18c0f9599d3a..bff7c0830af3 100644
-   --- a/arch/arm/boot/dts/bcm2711-rpi-4-b.dts
-   +++ b/arch/arm/boot/dts/bcm2711-rpi-4-b.dts
-   @@ -314,6 +314,12 @@
-    	pinctrl-names = "default";
-    	pinctrl-0 = <&i2c1_pins>;
-    	clock-frequency = <100000>;
-   +        status = "okay";
-   +
-   +        tea5767@60 {
-   +            compatible = "mozcelikors,tea5767";
-   +            reg = <0x60>;
-   +        };
-    };
+diff --git a/arch/arm/boot/dts/bcm2711-rpi-4-b.dts b/arch/arm/boot/dts/bcm2711-rpi-4-b.dts
+index 18c0f9599d3a..b09fe6f19259 100644
+--- a/arch/arm/boot/dts/bcm2711-rpi-4-b.dts
++++ b/arch/arm/boot/dts/bcm2711-rpi-4-b.dts
+@@ -314,6 +314,14 @@
+ 	pinctrl-names = "default";
+ 	pinctrl-0 = <&i2c1_pins>;
+ 	clock-frequency = <100000>;
++	status = "okay";
++
++	tea5767@60 {
++		compatible = "mozcelikors,tea5767";
++		reg = <0x60>;
++		minstation = <88000>;
++		maxstation = <108000>;
++	};
+ };
+ 
+ &i2c2 {
 ```
 
 ## Communicating with the Driver
