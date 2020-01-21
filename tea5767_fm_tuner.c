@@ -36,6 +36,8 @@
    +        tea5767@60 {
    +            compatible = "mozcelikors,tea5767";
    +            reg = <0x60>;
+   +            minstation = <88000>;
+   +            maxstation = <108000>;
    +        };
     };
 */
@@ -48,8 +50,6 @@
 #include <linux/delay.h>
 
 #define READY_WAIT_TIME 15000
-#define MIN_STATION_FREQ 88000
-#define MAX_STATION_FREQ 108000
 #define HCC_DEFAULT 1
 #define SNC_DEFAULT 1
 #define SEARCH_MODE_DEFAULT 2
@@ -67,11 +67,14 @@ struct tea5767_dev {
 	int mute;
         int station_list[MAX_STATION];
 	int station_count;
+
+	u32 minstation; //min possible frequency, default: 88000
+	u32 maxstation; //max possible frequency, default: 108000
 };
 
 /* Function prototypes */
 /* Utility functions - Scan functions, Not Essential to the driver */
-static int tea5767_get_wrapped_frequency (int freq);
+static int tea5767_get_wrapped_frequency (struct i2c_client * client, int freq);
 static int tea5767_get_device_frequency (struct i2c_client * client);
 static int tea5767_search (struct i2c_client * client, int dir, int mode, int forced_mono);
 static int tea5767_wait_ready (struct i2c_client * client);
@@ -84,19 +87,23 @@ static ssize_t sysfs_store_station_callback (struct device *dev, struct device_a
 static ssize_t sysfs_show_station_callback (struct device *dev, struct device_attribute *attr, char *buf);
 static ssize_t sysfs_store_mute_callback (struct device *dev, struct device_attribute *attr, const char *buf, size_t count);
 static ssize_t sysfs_show_mute_callback (struct device *dev, struct device_attribute *attr, char *buf);
+static ssize_t sysfs_show_stationlist_callback (struct device *dev, struct device_attribute *attr, char *buf);
 /* Module enter and exit */
 static int tea5767_probe(struct i2c_client * client, const struct i2c_device_id * id);
 static int tea5767_remove(struct i2c_client * client);
 
 /* Utility functions - Scan functions, Not essential, but nice to have */
-static int tea5767_get_wrapped_frequency (int freq)
+static int tea5767_get_wrapped_frequency (struct i2c_client * client, int freq)
 {
-	if (freq < MIN_STATION_FREQ || freq > MAX_STATION_FREQ)
+	struct tea5767_dev * tea5767;
+	tea5767 = i2c_get_clientdata(client);
+
+	if (freq < tea5767->minstation || freq > tea5767->maxstation)
 	{
-		if (freq > MAX_STATION_FREQ)
-			freq = MIN_STATION_FREQ;
-		else if (freq < MIN_STATION_FREQ)
-			freq= MAX_STATION_FREQ;
+		if (freq > tea5767->maxstation)
+			freq = tea5767->minstation;
+		else if (freq < tea5767->minstation)
+			freq= tea5767->maxstation;
 	}
 
 	return freq;
@@ -104,7 +111,7 @@ static int tea5767_get_wrapped_frequency (int freq)
 
 static int tea5767_get_device_frequency (struct i2c_client * client)
 {
-	struct tea5767_dev * tea5767;	
+	struct tea5767_dev * tea5767;
 	tea5767 = i2c_get_clientdata(client);
 
 #ifdef TEA5767_DEBUG
@@ -129,7 +136,7 @@ static int tea5767_get_device_frequency (struct i2c_client * client)
 
 static int tea5767_search (struct i2c_client * client, int dir, int mode, int forced_mono)
 {
-	struct tea5767_dev * tea5767;	
+	struct tea5767_dev * tea5767;
 	tea5767 = i2c_get_clientdata(client);
 
 #ifdef TEA5767_DEBUG
@@ -144,7 +151,7 @@ static int tea5767_search (struct i2c_client * client, int dir, int mode, int fo
 	if (dir) freq += 100;
 	else freq -= 100;
 
-	freq = tea5767_get_wrapped_frequency(freq);
+	freq = tea5767_get_wrapped_frequency(client, freq);
 #ifdef TEA5767_DEBUG
 	dev_info(&client->dev, "tea5767_search wrapped and incremented frequency %d \n", freq);
 #endif
@@ -259,7 +266,7 @@ static int tea5767_scan_frequencies (struct i2c_client * client, int mode, int f
 	dev_info(&client->dev, "tea5767_scan_frequencies is entered \n");
 #endif
 	int freq;
-	freq = MIN_STATION_FREQ;
+	freq = tea5767->minstation;
 	unsigned char stereo, level_adc;
 	int count;
         count = 0;
@@ -273,7 +280,7 @@ static int tea5767_scan_frequencies (struct i2c_client * client, int mode, int f
 		{
 			dev_err(&client->dev, "tea5767_scan_frequencies Unable to get status\n");
 		}
-		if (freq >= MAX_STATION_FREQ) break;
+		if (freq >= tea5767->maxstation) break;
 		
 		// Add found station frequency to the station list
 		tea5767->station_list[count] = freq;
@@ -282,7 +289,7 @@ static int tea5767_scan_frequencies (struct i2c_client * client, int mode, int f
 #endif
 		count++;
 	} 
-	while(freq < MAX_STATION_FREQ && count < MAX_STATION);
+	while(freq < tea5767->maxstation && count < MAX_STATION);
 
 	tea5767->station_count = count;
 
@@ -516,8 +523,10 @@ static int tea5767_probe(struct i2c_client * client,
 		const struct i2c_device_id * id)
 {
 	int ret = -1;
+	unsigned long val;
 
 	struct tea5767_dev * tea5767;
+	struct device *dev = &client->dev; // Here only for reference
 
 	/* Allocate new structure representing device */
 	tea5767 = devm_kzalloc(&client->dev, sizeof(struct tea5767_dev), GFP_KERNEL);
@@ -528,10 +537,40 @@ static int tea5767_probe(struct i2c_client * client,
 	/* Store pointer to I2C device/client */
 	tea5767->client = client;
 
+	/* Parse properties of the node - an example of how to parse devicetree properties */
+	/* More ref: https://elixir.bootlin.com/linux/v4.0/source/include/linux/property.h */
+	/* Use of_property_read if you want to use device node descriptor instead of device object for accessing,
+	   for that declare: struct device_node *np = dev->of_node
+	*/
+	u32 minstation_val;
+	ret = device_property_read_u32(dev, "minstation", &minstation_val);
+	if (ret < 0)
+	{
+		dev_err(&client->dev, "Couldn't read minstation property from devicetree\n");
+	}
+	else
+	{
+		tea5767->minstation = minstation_val;
+		dev_info(&client->dev, "Read minstation devicetree property as %d\n", tea5767->minstation);
+	}
+
+	u32 maxstation_val;
+	ret = device_property_read_u32(dev, "maxstation", &maxstation_val);
+	if (ret < 0)
+	{
+		dev_err(&client->dev, "Couldn't read maxstation property from devicetree\n");
+	}
+	else
+	{
+		tea5767->maxstation = maxstation_val;
+		dev_info(&client->dev, "Read maxstation devicetree property as %d\n", tea5767->maxstation);
+	}
+
 	/* Register sysfs hooks to i2c_client object. You can hook it to different objects as you desire!*/
 	ret = sysfs_create_group(&client->dev.kobj, &tea5767_sysfs_group);
-	if (ret < 0) {
-		dev_err(&client->dev, "couldn't register sysfs group\n");
+	if (ret < 0)
+	{
+		dev_err(&client->dev, "Couldn't register sysfs group\n");
 		return ret;
 	}
 
