@@ -48,6 +48,9 @@
 #include <linux/of.h>
 #include <linux/uaccess.h>
 #include <linux/delay.h>
+#include <linux/kthread.h>
+#include <linux/delay.h>
+#include <linux/spinlock.h>
 
 #define READY_WAIT_TIME 15000
 #define HCC_DEFAULT 1
