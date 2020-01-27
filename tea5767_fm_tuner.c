@@ -311,11 +311,13 @@ static int scan_kthread_task (void *data)
 #ifdef TEA5767_DEBUG
 	dev_info(&client->dev, "scan_kthread_task started\n");
 #endif
-	tea5767_set_freq(client, freq, HCC_DEFAULT, SNC_DEFAULT, FORCED_MONO, 1, 0); //mute
+	// Mute
+	tea5767_set_freq(client, freq, HCC_DEFAULT, SNC_DEFAULT, FORCED_MONO, 1, 0);
 	tea5767_wait_ready(client);
 
 	do {
 		if (tea5767_search(client, 1, SEARCH_MODE_DEFAULT, FORCED_MONO)) break;
+
 		if (-1 == tea5767_get_status(client, &freq, &stereo, &level_adc))
 		{
 			dev_err(&client->dev, "tea5767_scan_frequencies Unable to get status\n");
@@ -341,6 +343,9 @@ static int scan_kthread_task (void *data)
 
 	// We are exiting the kthread, adjusting flag accordingly.
 	tea5767->scan_task_flag = 0;
+
+	// Restore the latest station
+	tea5767_set_freq(client, tea5767->frequency, 1, 1, 0, tea5767->mute, 0);
 
 	dev_info(&client->dev, "scan_kthread_task completed\n");
 	return 0;
@@ -631,10 +636,9 @@ static int tea5767_probe(struct i2c_client * client,
 	/* Scan frequencies */
 	tea5767_scan_frequencies (client, SEARCH_MODE_DEFAULT, FORCED_MONO);
 
-        /* Set initial station */
+	/* Set initial station values - will be set after scan_kthread_task completes!*/
 	tea5767->frequency = 97200;
 	tea5767->mute = 0;
-        tea5767_set_freq(client, tea5767->frequency, 1, 1, 0, tea5767->mute, 0);
 
 	dev_info(&client->dev, 
 		 "tea5767_probe is exited on %s\n", tea5767->name);
