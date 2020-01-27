@@ -70,6 +70,10 @@ struct tea5767_dev {
 
 	u32 minstation; //min possible frequency, default: 88000
 	u32 maxstation; //max possible frequency, default: 108000
+
+        struct task_struct *scan_task; 	/* kthread task_struct */
+        u8 scan_task_flag;
+        spinlock_t station_list_lock;
 };
 
 /* Function prototypes */
@@ -80,6 +84,8 @@ static int tea5767_search (struct i2c_client * client, int dir, int mode, int fo
 static int tea5767_wait_ready (struct i2c_client * client);
 static int tea5767_get_status (struct i2c_client * client, int *freq, unsigned char *mode, unsigned char *level_adc);
 static int tea5767_scan_frequencies (struct i2c_client * client, int mode, int forced_mono);
+/* Kthread task function for frequency scanning*/
+static int scan_kthread_task (void *data);
 /* Utility functions - Essential functions */
 static int tea5767_set_freq (struct i2c_client * client, int freq, int hcc, int snc, unsigned char forcd_mono, int mute, int standby);
 /* Sysfs functions and attrs */
@@ -191,7 +197,7 @@ static int tea5767_search (struct i2c_client * client, int dir, int mode, int fo
 
 static int tea5767_wait_ready (struct i2c_client * client)
 {
-	struct tea5767_dev * tea5767;	
+	struct tea5767_dev * tea5767;
 	tea5767 = i2c_get_clientdata(client);
 
 #ifdef TEA5767_DEBUG
@@ -235,7 +241,7 @@ static int tea5767_wait_ready (struct i2c_client * client)
 
 static int tea5767_get_status (struct i2c_client * client, int *freq, unsigned char *mode, unsigned char *level_adc)
 {
-	struct tea5767_dev * tea5767;	
+	struct tea5767_dev * tea5767;
 	tea5767 = i2c_get_clientdata(client);
 
 #ifdef TEA5767_DEBUG
@@ -259,31 +265,65 @@ static int tea5767_get_status (struct i2c_client * client, int *freq, unsigned c
 
 static int tea5767_scan_frequencies (struct i2c_client * client, int mode, int forced_mono)
 {
-	struct tea5767_dev * tea5767;	
+	struct tea5767_dev * tea5767;
 	tea5767 = i2c_get_clientdata(client);
 
 #ifdef TEA5767_DEBUG
 	dev_info(&client->dev, "tea5767_scan_frequencies is entered \n");
 #endif
+
+	/* Start kthread for scanning frequency - nonblocking scan via kthread */
+	if (tea5767->scan_task_flag == 0)
+	{
+		tea5767->scan_task = kthread_run(scan_kthread_task, client, "scan_kthread_task");
+		if(IS_ERR(tea5767->scan_task))
+		{
+			dev_info(&client->dev, "Failed to create the task\n");
+			return PTR_ERR(tea5767->scan_task);
+		}
+	}
+	else
+		return -EBUSY;
+
+	tea5767->scan_task_flag = 1;
+
+	return 1;
+}
+
+/* Kthread task function for frequency scanning*/
+static int scan_kthread_task (void *data)
+{
+	struct tea5767_dev * tea5767;
+	struct i2c_client *client = data;
+	tea5767 = i2c_get_clientdata(client);
+
+	unsigned long flags;
+
 	int freq;
 	freq = tea5767->minstation;
 	unsigned char stereo, level_adc;
 	int count;
         count = 0;
-
-	tea5767_set_freq(client, freq, HCC_DEFAULT, SNC_DEFAULT, forced_mono, 1, 0); //mute
+ 
+#ifdef TEA5767_DEBUG
+	dev_info(&client->dev, "scan_kthread_task started\n");
+#endif
+	tea5767_set_freq(client, freq, HCC_DEFAULT, SNC_DEFAULT, FORCED_MONO, 1, 0); //mute
 	tea5767_wait_ready(client);
 
 	do {
-		if (tea5767_search(client, 1, mode, forced_mono)) break;
+		if (tea5767_search(client, 1, SEARCH_MODE_DEFAULT, FORCED_MONO)) break;
 		if (-1 == tea5767_get_status(client, &freq, &stereo, &level_adc))
 		{
 			dev_err(&client->dev, "tea5767_scan_frequencies Unable to get status\n");
 		}
 		if (freq >= tea5767->maxstation) break;
-		
+	
 		// Add found station frequency to the station list
+		// Protect the variable (CS) that we write to in kthread.
+		spin_lock_irqsave(&tea5767->station_list_lock, flags);
 		tea5767->station_list[count] = freq;
+		spin_unlock_irqrestore(&tea5767->station_list_lock, flags);
 #ifdef TEA5767_DEBUG
 		dev_info(&client->dev, "Scanned frequency Nr %d: %d \n", count, freq);
 #endif
@@ -291,9 +331,16 @@ static int tea5767_scan_frequencies (struct i2c_client * client, int mode, int f
 	} 
 	while(freq < tea5767->maxstation && count < MAX_STATION);
 
+	// Protect the variable (CS) that we write to in kthread.
+	spin_lock_irqsave(&tea5767->station_list_lock, flags);
 	tea5767->station_count = count;
+	spin_unlock_irqrestore(&tea5767->station_list_lock, flags);
 
-	return 1;
+	// We are exiting the kthread, adjusting flag accordingly.
+	tea5767->scan_task_flag = 0;
+
+	dev_info(&client->dev, "scan_kthread_task completed\n");
+	return 0;
 }
 
 /* Utility functions - Essential functions */
@@ -470,12 +517,15 @@ static ssize_t sysfs_show_stationlist_callback (struct device *dev, struct devic
 
 	int buf_len;
 	buf_len = 0;
+	unsigned long flags;
 
 	client = to_i2c_client(dev);
 	/* Get device structure from bus device context */	
 	tea5767 = i2c_get_clientdata(client);
 
 	dev_info(&client->dev, "sysfs_show_stationlist_callback: Userspace client is reading from sysfs.\n");
+
+	spin_lock_irqsave(&tea5767->station_list_lock, flags);
 
 	if (tea5767->station_count > 0)
 	{
@@ -489,10 +539,11 @@ static ssize_t sysfs_show_stationlist_callback (struct device *dev, struct devic
 			else
 				buf_len = sprintf(buf, "%s%d,", buf, tea5767->station_list[i]); // Concat , with the comma
 		}
-
+		spin_unlock_irqrestore(&tea5767->station_list_lock, flags);
 		return buf_len;
 	}
 	else
+		spin_unlock_irqrestore(&tea5767->station_list_lock, flags);
 		return 0;
 }
 
@@ -597,6 +648,12 @@ static int tea5767_remove(struct i2c_client * client)
 
 	dev_info(&client->dev, 
 		 "tea5767_remove is entered on %s\n", tea5767->name);
+
+	/* Stop kthread if its running */
+	if (tea5767->scan_task_flag == 1) {
+		kthread_stop(tea5767->scan_task);
+		tea5767->scan_task_flag = 0;
+	}
 
 	/* Deregister sysfs hooks */
 	sysfs_remove_group(&client->dev.kobj, &tea5767_sysfs_group);
