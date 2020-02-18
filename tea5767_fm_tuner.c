@@ -300,8 +300,6 @@ static int scan_kthread_task (void *data)
 	struct i2c_client *client = data;
 	tea5767 = i2c_get_clientdata(client);
 
-	unsigned long flags;
-
 	int freq;
 	freq = tea5767->minstation;
 	unsigned char stereo, level_adc;
@@ -326,9 +324,9 @@ static int scan_kthread_task (void *data)
 	
 		// Add found station frequency to the station list
 		// Protect the variable (CS) that we write to in kthread.
-		spin_lock_irqsave(&tea5767->station_list_lock, flags);
+		spin_lock(&tea5767->station_list_lock);
 		tea5767->station_list[count] = freq;
-		spin_unlock_irqrestore(&tea5767->station_list_lock, flags);
+		spin_unlock(&tea5767->station_list_lock);
 #ifdef TEA5767_DEBUG
 		dev_info(&client->dev, "Scanned frequency Nr %d: %d \n", count, freq);
 #endif
@@ -337,9 +335,12 @@ static int scan_kthread_task (void *data)
 	while(freq < tea5767->maxstation && count < MAX_STATION);
 
 	// Protect the variable (CS) that we write to in kthread.
-	spin_lock_irqsave(&tea5767->station_list_lock, flags);
+	// Use spin_lock_irqsave/spin_lock_irqrestore if the variable is read/written in atomic context (ISR)
+	// If not, you can use spin_lock or mutex_lock for process context variables. mutex_lock is more preferred for process context.
+	// spin_lock wastes CPU cycles, preventing process to go sleep, so more real-time oriented than mutex.
+	spin_lock(&tea5767->station_list_lock);
 	tea5767->station_count = count;
-	spin_unlock_irqrestore(&tea5767->station_list_lock, flags);
+	spin_unlock(&tea5767->station_list_lock);
 
 	// We are exiting the kthread, adjusting flag accordingly.
 	tea5767->scan_task_flag = 0;
@@ -525,7 +526,6 @@ static ssize_t sysfs_show_stationlist_callback (struct device *dev, struct devic
 
 	int buf_len;
 	buf_len = 0;
-	unsigned long flags;
 
 	client = to_i2c_client(dev);
 	/* Get device structure from bus device context */	
@@ -533,7 +533,10 @@ static ssize_t sysfs_show_stationlist_callback (struct device *dev, struct devic
 
 	dev_info(&client->dev, "sysfs_show_stationlist_callback: Userspace client is reading from sysfs.\n");
 
-	spin_lock_irqsave(&tea5767->station_list_lock, flags);
+	// Use spin_lock_irqsave/spin_lock_irqrestore if the variable is read/written in atomic context (ISR)
+	// If not, you can use spin_lock or mutex_lock for process context variables. mutex_lock is more preferred for process context.
+	// spin_lock wastes CPU cycles, preventing process to go sleep, so more real-time oriented than mutex.
+	spin_lock(&tea5767->station_list_lock);
 
 	if (tea5767->station_count > 0)
 	{
@@ -547,11 +550,11 @@ static ssize_t sysfs_show_stationlist_callback (struct device *dev, struct devic
 			else
 				buf_len = sprintf(buf, "%s%d,", buf, tea5767->station_list[i]); // Concat , with the comma
 		}
-		spin_unlock_irqrestore(&tea5767->station_list_lock, flags);
+		spin_unlock(&tea5767->station_list_lock);
 		return buf_len;
 	}
 	else
-		spin_unlock_irqrestore(&tea5767->station_list_lock, flags);
+		spin_unlock(&tea5767->station_list_lock);
 		return 0;
 }
 
